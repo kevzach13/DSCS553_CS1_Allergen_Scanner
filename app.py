@@ -200,7 +200,7 @@ def scan_image(image, allergens_csv: str):
 
 
 # -------------- Gradio UI --------------
-with gr.Blocks(theme="NoCrypt/miku") as demo:
+with gr.Blocks() as demo:
     gr.Markdown("## 🥗 Allergen Scanner — API (Microsoft TrOCR on Hugging Face)")
     with gr.Row():
         img = gr.Image(type="pil", label="Upload ingredients photo / label")
