@@ -8,6 +8,7 @@ from dotenv import load_dotenv
 from difflib import get_close_matches
 from huggingface_hub import InferenceClient
 
+
 # Load .env only for local runs. In HF Spaces, set HF_TOKEN as a Repo Secret.
 load_dotenv()
 
