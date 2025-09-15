@@ -6,136 +6,70 @@ from PIL import Image
 import gradio as gr
 from dotenv import load_dotenv
 from difflib import get_close_matches
-from huggingface_hub import InferenceClient
 
-# ---------------- Env & model config ----------------
+# ---------------- Config ----------------
 load_dotenv()  # local only; in Spaces use repo secrets/variables
 
-DEFAULT_MODEL_ID = "microsoft/trocr-base-printed"
-MODEL_ID = (os.getenv("OCR_MODEL_ID") or DEFAULT_MODEL_ID).strip()
-HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
+OCRSPACE_API_KEY = os.getenv("OCRSPACE_API_KEY")  # <-- add as Repo Secret in your Space
+OCRSPACE_URL = "https://api.ocr.space/parse/image"
 
-def _model_exists(mid: str) -> bool:
-    try:
-        resp = requests.get(
-            f"https://huggingface.co/api/models/{mid}",
-            timeout=15,
-            headers={"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {},
-        )
-        return resp.status_code == 200
-    except Exception as e:
-        print("[WARN] Model check error:", e)
-        return False
+print("OCRSPACE_API_KEY set:", bool(OCRSPACE_API_KEY))
 
-if not _model_exists(MODEL_ID):
-    print(f"[WARN] MODEL_ID {MODEL_ID!r} not found. Falling back to {DEFAULT_MODEL_ID!r}.")
-    MODEL_ID = DEFAULT_MODEL_ID
-
-API_URL = f"https://api-inference.huggingface.co/models/{MODEL_ID}"
-print("MODEL_ID:", repr(MODEL_ID), "HF_TOKEN set:", bool(HF_TOKEN))
-
-# ---------------- OCR via Inference API ----------------
+# ---------------- OCR via OCR.space ----------------
 def extract_text(image: Image.Image) -> str:
     """
-    Call HF Inference API (client + raw HTTP fallbacks).
+    Call OCR.space REST API and return extracted text.
+    Raises RuntimeError with a clear message if the call fails.
     """
-    if not HF_TOKEN:
-        raise RuntimeError("HF_TOKEN missing. In Spaces, add it under Settings → Repository secrets.")
+    if not OCRSPACE_API_KEY:
+        raise RuntimeError("OCRSPACE_API_KEY missing. In Spaces, add it under Settings → Repository secrets.")
 
-    # prepare bytes
+    # Convert PIL image → bytes
     buf = io.BytesIO()
     image.save(buf, format="PNG")
     img_bytes = buf.getvalue()
 
-    notes = []
+    # Build request
+    files = {"file": ("image.png", img_bytes, "image/png")}
+    data = {
+        "language": "eng",
+        "scale": "true",          # helps small text
+        "isTable": "false",
+        "OCREngine": 2,           # 1 or 2 (2 is generally better for printed)
+    }
+    headers = {"apikey": OCRSPACE_API_KEY}
 
-    # 1) Official client call
     try:
-        client = InferenceClient(
-            model=MODEL_ID,
-            token=HF_TOKEN,
-            provider="hf-inference",  # recommended
-            timeout=90,
-        )
-        # health log (shows in Space logs)
-        try:
-            status = client.get_model_status()
-            print("hf status:", getattr(status, "loaded", None), getattr(status, "state", None))
-        except Exception as e:
-            print("get_model_status error:", repr(e))
-
-        out = client.image_to_text(image=img_bytes)  # do NOT pass wait_for_model here
-        if isinstance(out, str) and out.strip():
-            return out.strip()
-        if isinstance(out, list) and out and isinstance(out[0], dict) and out[0].get("generated_text"):
-            return out[0]["generated_text"].strip()
-        notes.append("[client] empty/unknown response")
+        r = requests.post(OCRSPACE_URL, files=files, data=data, headers=headers, timeout=90)
     except Exception as e:
-        notes.append(f"[client error] {e}")
+        raise RuntimeError(f"OCR API request failed: {e}")
 
-    # helper to parse json or capture status/body
-    def _try_json(resp):
-        try:
-            return resp.json(), None
-        except Exception:
-            text = (resp.text or "")[:240].replace("\n", " ")
-            return None, f"status={resp.status_code} body[:240]={text!r}"
-
-    # 2) Raw POST (octet-stream)
+    # Robust JSON handling with diagnostics
     try:
-        r = requests.post(
-            API_URL + "?wait_for_model=true",
-            headers={
-                "Authorization": f"Bearer {HF_TOKEN}",
-                "Accept": "application/json",
-                "Content-Type": "application/octet-stream",
-            },
-            data=img_bytes,
-            timeout=90,
-        )
-        data, dbg = _try_json(r)
-        if data:
-            if isinstance(data, list) and data and isinstance(data[0], dict) and data[0].get("generated_text"):
-                return data[0]["generated_text"].strip()
-            if isinstance(data, dict) and isinstance(data.get("generated_text"), str):
-                return data["generated_text"].strip()
-            if "estimated_time" in data:
-                notes.append(f"[octet] model warming (~{data['estimated_time']}s)")
-            elif "error" in data:
-                notes.append(f"[octet] {data['error']}")
-            else:
-                notes.append("[octet] unknown JSON shape")
-        else:
-            notes.append(f"[octet parse] {dbg}")
-    except Exception as e:
-        notes.append(f"[octet error] {e}")
+        j = r.json()
+    except Exception:
+        snippet = (r.text or "")[:240].replace("\n", " ")
+        raise RuntimeError(f"OCR API non-JSON response (status {r.status_code}): {snippet!r}")
 
-    # 3) Raw POST (multipart)
-    try:
-        r = requests.post(
-            API_URL + "?wait_for_model=true",
-            headers={"Authorization": f"Bearer {HF_TOKEN}", "Accept": "application/json"},
-            files={"inputs": ("image.png", img_bytes, "image/png")},
-            timeout=90,
-        )
-        data, dbg = _try_json(r)
-        if data:
-            if isinstance(data, list) and data and isinstance(data[0], dict) and data[0].get("generated_text"):
-                return data[0]["generated_text"].strip()
-            if isinstance(data, dict) and isinstance(data.get("generated_text"), str):
-                return data["generated_text"].strip()
-            if "estimated_time" in data:
-                notes.append(f"[multipart] model warming (~{data['estimated_time']}s)")
-            elif "error" in data:
-                notes.append(f"[multipart] {data['error']}")
-            else:
-                notes.append("[multipart] unknown JSON shape")
-        else:
-            notes.append(f"[multipart parse] {dbg}")
-    except Exception as e:
-        notes.append(f"[multipart error] {e}")
+    if j.get("IsErroredOnProcessing"):
+        emsg = j.get("ErrorMessage") or j.get("ErrorMessageDetails") or "Unknown OCR error"
+        # Some returns have list error message
+        if isinstance(emsg, list) and emsg:
+            emsg = emsg[0]
+        raise RuntimeError(f"OCR API error: {emsg}")
 
-    raise RuntimeError("OCR failed. " + " | ".join(notes))
+    results = j.get("ParsedResults") or []
+    text_parts = []
+    for res in results:
+        t = res.get("ParsedText") or ""
+        if t.strip():
+            text_parts.append(t)
+
+    text = "\n".join(text_parts).strip()
+    if not text:
+        raise RuntimeError("OCR returned empty text.")
+
+    return text
 
 # ---------------- Matching helpers ----------------
 def _normalize(txt: str) -> str:
@@ -144,10 +78,8 @@ def _normalize(txt: str) -> str:
 def _variants(term: str):
     t = (term or "").strip().lower()
     c = {t}
-    if t.endswith("es"):
-        c.add(t[:-2])
-    if t.endswith("s"):
-        c.add(t[:-1])
+    if t.endswith("es"): c.add(t[:-2])
+    if t.endswith("s"):  c.add(t[:-1])
     c.add(t.replace("-", " "))
     c.add(t.replace(" ", ""))
     return list(c)
@@ -158,20 +90,13 @@ def _tokenize(txt: str):
 def _highlight(html_text: str, words: list) -> str:
     out = html_text
     for w in sorted(set(words), key=len, reverse=True):
-        if not w:
-            continue
+        if not w: continue
         pattern = re.compile(re.escape(w), flags=re.IGNORECASE)
         out = pattern.sub(lambda m: f"<mark>{m.group(0)}</mark>", out)
     return out
 
 # ---------------- Main logic ----------------
 def scan_image(image, allergens_csv: str, show_text: bool):
-    if not HF_TOKEN:
-        return gr.HTML(
-            "<b>Missing HF_TOKEN.</b> In local runs, set it in a .env file. "
-            "In Hugging Face Spaces, add it under Settings → Repository secrets."
-        )
-
     if image is None or not (allergens_csv or "").strip():
         return gr.HTML("<b>Provide an image and at least one allergen (comma-separated).</b>")
 
@@ -208,7 +133,7 @@ def scan_image(image, allergens_csv: str, show_text: bool):
     <div style="line-height:1.5">
       <h3 style="margin:0">Detected allergens: {found_str}</h3>
       <p style="margin:.25rem 0 .5rem 0;font-size:.95rem;color:#999">
-        Model: <code>{MODEL_ID}</code> • Data is processed in memory only.
+        API: <code>OCR.space</code> • Data processed in memory only (we do not store inputs).
       </p>
       <details {"open" if show_text else ""} style="margin:.25rem 0">
         <summary style="cursor:pointer"><b>Extracted text (preview)</b></summary>
@@ -222,8 +147,8 @@ def scan_image(image, allergens_csv: str, show_text: bool):
     return gr.HTML(html)
 
 # ---------------- Gradio UI ----------------
-with gr.Blocks(title="Allergen Scanner — API (TrOCR)") as demo:
-    gr.Markdown("## 🥗 Allergen Scanner — API (Microsoft TrOCR on Hugging Face)")
+with gr.Blocks(title="Allergen Scanner — API (OCR.space)") as demo:
+    gr.Markdown("## 🥗 Allergen Scanner — API (OCR.space)")
     with gr.Row():
         img = gr.Image(type="pil", label="Upload ingredients photo / label")
         allergens = gr.Textbox(
@@ -237,4 +162,5 @@ with gr.Blocks(title="Allergen Scanner — API (TrOCR)") as demo:
 
 if __name__ == "__main__":
     demo.launch()
+
 
