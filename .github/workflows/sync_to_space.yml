@@ -16,7 +16,7 @@ jobs:
       - name: Push to Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}            # your HF token (WRITE)
-          HF_ACTOR: Mourya0402                 # <-- your personal HF username (NOT Team-13)
+          HF_ACTOR: Kevzach13                 # <-- your personal HF username (NOT Team-13)
           HF_SPACE_SLUG: Team-13/scan_for_allergies    # <-- your Space slug
           SPACE_BRANCH: main
         run: |
