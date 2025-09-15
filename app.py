@@ -14,27 +14,36 @@ load_dotenv()
 
 # Allow overriding the model from an env var (handy in Spaces)
 MODEL_ID = os.getenv("OCR_MODEL_ID", "microsoft/trocr-base-printed")
+HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
 API_URL = f"https://api-inference.huggingface.co/models/{MODEL_ID}"
-HF_TOKEN = os.getenv("HF_TOKEN")
+TROCR_SPACE_ID = os.getenv("TROCR_SPACE_ID", "akhaliq/TrOCR")  # fallback Space
 
 
 # ---------------- OCR (API) ----------------
+# --- OCR call with robust parsing + fallback Space ---
 def extract_text(image: Image.Image) -> str:
     """
-    Robust call to HF Inference API for TrOCR with two fallbacks.
-    Raises RuntimeError with a short message if all attempts fail.
+    Call HF Inference API for TrOCR with robust parsing and a fallback to a public Space.
+    Raises RuntimeError with a clear message if all attempts fail.
     """
+    if not HF_TOKEN:
+        raise RuntimeError("HF_TOKEN missing. In Spaces, add it under Settings → Repository secrets.")
+
+    import io
+    from huggingface_hub import InferenceClient
+    from gradio_client import Client, file as gradio_file
+
+    # Prepare image bytes
     buf = io.BytesIO()
     image.save(buf, format="PNG")
     img_bytes = buf.getvalue()
-    url = API_URL + "?wait_for_model=true"
 
     notes = []
 
-    # 1) Official client
+    # 1) Official client (image_to_text)
     try:
         client = InferenceClient(model=MODEL_ID, token=HF_TOKEN, timeout=90)
-        out = client.image_to_text(image=image)
+        out = client.image_to_text(image=image, wait_for_model=True)
         if isinstance(out, str) and out.strip():
             return out.strip()
         if isinstance(out, list) and out and isinstance(out[0], dict) and out[0].get("generated_text"):
@@ -43,86 +52,85 @@ def extract_text(image: Image.Image) -> str:
     except Exception as e:
         notes.append(f"[client error] {e}")
 
+    # Helper to parse JSON safely and report status/text on failure
+    def _try_json(resp):
+        try:
+            return resp.json(), None
+        except Exception:
+            text = resp.text[:240].replace("\n", " ")
+            return None, f"status={resp.status_code} body[:240]={text!r}"
+
     # 2) Raw POST (octet-stream)
     try:
         r = requests.post(
-            url,
-            headers={"Authorization": f"Bearer {HF_TOKEN}", "Content-Type": "application/octet-stream"},
+            API_URL + "?wait_for_model=true",
+            headers={
+                "Authorization": f"Bearer {HF_TOKEN}",
+                "Accept": "application/json",
+                "Content-Type": "application/octet-stream",
+            },
             data=img_bytes,
             timeout=90,
         )
-        try:
-            data = r.json()
+        data, dbg = _try_json(r)
+        if data:
             if isinstance(data, list) and data and isinstance(data[0], dict) and data[0].get("generated_text"):
                 return data[0]["generated_text"].strip()
             if isinstance(data, dict) and isinstance(data.get("generated_text"), str):
                 return data["generated_text"].strip()
-            if isinstance(data, dict) and "estimated_time" in data:
+            if "estimated_time" in data:
                 notes.append(f"[octet] model warming (~{data['estimated_time']}s)")
-            elif isinstance(data, dict) and "error" in data:
+            elif "error" in data:
                 notes.append(f"[octet] {data['error']}")
             else:
-                notes.append("[octet] unknown JSON")
-        except Exception as e:
-            notes.append(f"[octet parse] {e}")
+                notes.append("[octet] unknown JSON shape")
+        else:
+            notes.append(f"[octet parse] {dbg}")
     except Exception as e:
         notes.append(f"[octet error] {e}")
 
     # 3) Raw POST (multipart form)
     try:
         r = requests.post(
-            url,
-            headers={"Authorization": f"Bearer {HF_TOKEN}"},
+            API_URL + "?wait_for_model=true",
+            headers={
+                "Authorization": f"Bearer {HF_TOKEN}",
+                "Accept": "application/json",
+            },
             files={"inputs": ("image.png", img_bytes, "image/png")},
             timeout=90,
         )
-        try:
-            data = r.json()
+        data, dbg = _try_json(r)
+        if data:
             if isinstance(data, list) and data and isinstance(data[0], dict) and data[0].get("generated_text"):
                 return data[0]["generated_text"].strip()
             if isinstance(data, dict) and isinstance(data.get("generated_text"), str):
                 return data["generated_text"].strip()
-            if isinstance(data, dict) and "estimated_time" in data:
+            if "estimated_time" in data:
                 notes.append(f"[multipart] model warming (~{data['estimated_time']}s)")
-            elif isinstance(data, dict) and "error" in data:
+            elif "error" in data:
                 notes.append(f"[multipart] {data['error']}")
             else:
-                notes.append("[multipart] unknown JSON")
-        except Exception as e:
-            notes.append(f"[multipart parse] {e}")
+                notes.append("[multipart] unknown JSON shape")
+        else:
+            notes.append(f"[multipart parse] {dbg}")
     except Exception as e:
         notes.append(f"[multipart error] {e}")
 
+    # 4) Fallback: call a public TrOCR Space via gradio_client
+    try:
+        c = Client(TROCR_SPACE_ID)
+        result = c.predict(gradio_file(io.BytesIO(img_bytes)), api_name="/predict")
+        if isinstance(result, list) and result:
+            result = result[0]
+        if isinstance(result, str) and result.strip():
+            return result.strip()
+        notes.append("[space] empty/unknown response")
+    except Exception as e:
+        notes.append(f"[space error] {e}")
+
     raise RuntimeError("OCR failed. " + " | ".join(notes))
 
-
-# ---------------- Matching helpers ----------------
-def _normalize(txt: str) -> str:
-    # lowercase + collapse whitespace
-    return re.sub(r"\s+", " ", (txt or "")).strip().lower()
-
-def _variants(term: str):
-    t = (term or "").strip().lower()
-    c = {t}
-    if t.endswith("es"): c.add(t[:-2])
-    if t.endswith("s"):  c.add(t[:-1])
-    c.add(t.replace("-", " "))
-    c.add(t.replace(" ", ""))
-    return list(c)
-
-def _tokenize(txt: str):
-    # words only (tolerant to OCR punctuation)
-    return re.findall(r"[a-z]+", txt.lower())
-
-def _highlight(html_text: str, words: list) -> str:
-    """Wrap matches in <mark> (case-insensitive)."""
-    out = html_text
-    for w in sorted(set(words), key=len, reverse=True):
-        if not w:
-            continue
-        pattern = re.compile(re.escape(w), flags=re.IGNORECASE)
-        out = pattern.sub(lambda m: f"<mark>{m.group(0)}</mark>", out)
-    return out
 
 
 # ---------------- Main logic ----------------
