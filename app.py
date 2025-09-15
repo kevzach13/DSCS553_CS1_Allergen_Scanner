@@ -8,18 +8,15 @@ from dotenv import load_dotenv
 from difflib import get_close_matches
 from huggingface_hub import InferenceClient
 
-# ---------------- Env & config ----------------
-load_dotenv()  # for local runs only; Spaces will use repo secrets/variables
+# ---------------- Env & model config ----------------
+load_dotenv()  # local only; in Spaces use repo secrets/variables
 
-# Defaults + env
-# --- Model config with validation & fallback ---
 DEFAULT_MODEL_ID = "microsoft/trocr-base-printed"
 MODEL_ID = (os.getenv("OCR_MODEL_ID") or DEFAULT_MODEL_ID).strip()
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
 
 def _model_exists(mid: str) -> bool:
     try:
-        # Check the model repo (this is NOT the inference endpoint)
         resp = requests.get(
             f"https://huggingface.co/api/models/{mid}",
             timeout=15,
@@ -37,12 +34,10 @@ if not _model_exists(MODEL_ID):
 API_URL = f"https://api-inference.huggingface.co/models/{MODEL_ID}"
 print("MODEL_ID:", repr(MODEL_ID), "HF_TOKEN set:", bool(HF_TOKEN))
 
-
-# ---------------- OCR (Inference API only) ----------------
+# ---------------- OCR via Inference API ----------------
 def extract_text(image: Image.Image) -> str:
     """
-    Call HF Inference API for TrOCR with robust parsing (client + raw HTTP).
-    Raises RuntimeError with a clear message if all attempts fail.
+    Call HF Inference API (client + raw HTTP fallbacks).
     """
     if not HF_TOKEN:
         raise RuntimeError("HF_TOKEN missing. In Spaces, add it under Settings → Repository secrets.")
@@ -56,12 +51,19 @@ def extract_text(image: Image.Image) -> str:
 
     # 1) Official client call
     try:
-        client = InferenceClient(model=MODEL_ID, token=HF_TOKEN, provider="hf-inference",timeout=90)
-         try:
+        client = InferenceClient(
+            model=MODEL_ID,
+            token=HF_TOKEN,
+            provider="hf-inference",  # recommended
+            timeout=90,
+        )
+        # health log (shows in Space logs)
+        try:
             status = client.get_model_status()
             print("hf status:", getattr(status, "loaded", None), getattr(status, "state", None))
         except Exception as e:
             print("get_model_status error:", repr(e))
+
         out = client.image_to_text(image=image)  # do NOT pass wait_for_model here
         if isinstance(out, str) and out.strip():
             return out.strip()
@@ -142,8 +144,10 @@ def _normalize(txt: str) -> str:
 def _variants(term: str):
     t = (term or "").strip().lower()
     c = {t}
-    if t.endswith("es"): c.add(t[:-2])
-    if t.endswith("s"):  c.add(t[:-1])
+    if t.endswith("es"):
+        c.add(t[:-2])
+    if t.endswith("s"):
+        c.add(t[:-1])
     c.add(t.replace("-", " "))
     c.add(t.replace(" ", ""))
     return list(c)
@@ -154,7 +158,8 @@ def _tokenize(txt: str):
 def _highlight(html_text: str, words: list) -> str:
     out = html_text
     for w in sorted(set(words), key=len, reverse=True):
-        if not w: continue
+        if not w:
+            continue
         pattern = re.compile(re.escape(w), flags=re.IGNORECASE)
         out = pattern.sub(lambda m: f"<mark>{m.group(0)}</mark>", out)
     return out
