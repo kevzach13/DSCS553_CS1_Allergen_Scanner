@@ -13,10 +13,11 @@ from huggingface_hub import InferenceClient
 load_dotenv()
 
 # Allow overriding the model from an env var (handy in Spaces)
-MODEL_ID = os.getenv("OCR_MODEL_ID", "microsoft/trocr-base-printed")
+MODEL_ID = (os.getenv("OCR_MODEL_ID") or "microsoft/trocr-base-printed").strip()
+
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
 API_URL = f"https://api-inference.huggingface.co/models/{MODEL_ID}"
-TROCR_SPACE_ID = os.getenv("TROCR_SPACE_ID", "akhaliq/TrOCR")  # fallback Space
+
 
 
 # ---------------- OCR (API) ----------------
@@ -43,7 +44,7 @@ def extract_text(image: Image.Image) -> str:
     # 1) Official client (image_to_text)
     try:
         client = InferenceClient(model=MODEL_ID, token=HF_TOKEN, timeout=90)
-        out = client.image_to_text(image=image, wait_for_model=True)
+        out = client.image_to_text(image=image) 
         if isinstance(out, str) and out.strip():
             return out.strip()
         if isinstance(out, list) and out and isinstance(out[0], dict) and out[0].get("generated_text"):
@@ -168,13 +169,8 @@ def scan_image(image, allergens_csv: str, show_text: bool):
             if v in token_set:
                 hit = True
                 break
-        # 2) regex word-boundary fallback
-        if not hit:
-            for v in _variants(a):
-                if re.search(rf"\b{re.escape(v)}\b", norm_text):
-                    hit = True
-                    break
-        # 3) light fuzzy (handles small OCR typos)
+        
+        # 2) light fuzzy (handles small OCR typos)
         if not hit:
             close = get_close_matches(a, tokens, n=1, cutoff=0.86)
             if close:
