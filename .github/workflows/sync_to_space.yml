@@ -1,14 +1,31 @@
-- name: Push to Space
-  env:
-    HF_TOKEN: ${{ secrets.HF_TOKEN }}
-    HF_ACTOR: Kevzach13
-    HF_SPACE_SLUG: Team-13/scan_for_allergies
-    SPACE_BRANCH: main
-  run: |
-    set -e
-    git config user.email "actions@github.com"
-    git config user.name "github-actions"
-    git push --force-with-lease \
-      "https://${HF_ACTOR}:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE_SLUG}" \
-      HEAD:${SPACE_BRANCH}
+name: Sync to Hugging Face Space
+
+on:
+  push:
+    branches: [main]           # runs on any push to main
+  workflow_dispatch:           # lets you run it manually from Actions tab
+
+jobs:
+  sync-to-space:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Push to Space (force once to align histories)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}            # your WRITE token (in GitHub repo secrets)
+          HF_ACTOR: Kevzach13                          # <-- YOUR HF username (token owner)
+          HF_SPACE_SLUG: Team-13/scan_for_allergies    # your Space slug
+          SPACE_BRANCH: main
+        run: |
+          set -e
+          git config user.email "actions@github.com"
+          git config user.name "github-actions"
+          git push --force-with-lease \
+            "https://${HF_ACTOR}:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE_SLUG}" \
+            HEAD:${SPACE_BRANCH}
 
