@@ -5,34 +5,28 @@ import requests
 from PIL import Image
 import gradio as gr
 from dotenv import load_dotenv
+from difflib import get_close_matches
 from huggingface_hub import InferenceClient
 
-
-# Load HF_TOKEN from .env for local runs (ignored in HF Spaces which use Secrets)
+# Load .env only for local runs. In HF Spaces, set HF_TOKEN as a Repo Secret.
 load_dotenv()
 
-MODEL_ID = "microsoft/trocr-base-printed"
+# Allow overriding the model from an env var (handy in Spaces)
+MODEL_ID = os.getenv("OCR_MODEL_ID", "microsoft/trocr-base-printed")
 API_URL = f"https://api-inference.huggingface.co/models/{MODEL_ID}"
 HF_TOKEN = os.getenv("HF_TOKEN")
 
-HEADERS = {"Authorization": f"Bearer {HF_TOKEN}", "Content-Type": "application/octet-stream"}
 
-# -------------- OCR --------------
+# ---------------- OCR (API) ----------------
 def extract_text(image: Image.Image) -> str:
     """
-    Robust call to HF Inference API for TrOCR with detailed diagnostics.
-    Tries official InferenceClient, then raw requests in two styles (octet-stream, multipart).
-    Only returns after trying all paths, so we don't exit early on 404.
+    Robust call to HF Inference API for TrOCR with two fallbacks.
+    Raises RuntimeError with a short message if all attempts fail.
     """
-    # Prep
     buf = io.BytesIO()
     image.save(buf, format="PNG")
     img_bytes = buf.getvalue()
     url = API_URL + "?wait_for_model=true"
-
-    def _dbg(label, r):
-        body = r.text if hasattr(r, "text") else str(r)
-        return f"[{label}] status={getattr(r,'status_code','?')} body[:240]={body[:240]!r}"
 
     notes = []
 
@@ -44,7 +38,7 @@ def extract_text(image: Image.Image) -> str:
             return out.strip()
         if isinstance(out, list) and out and isinstance(out[0], dict) and out[0].get("generated_text"):
             return out[0]["generated_text"].strip()
-        notes.append("[client] empty/unknown shape")
+        notes.append("[client] empty/unknown response")
     except Exception as e:
         notes.append(f"[client error] {e}")
 
@@ -63,13 +57,13 @@ def extract_text(image: Image.Image) -> str:
             if isinstance(data, dict) and isinstance(data.get("generated_text"), str):
                 return data["generated_text"].strip()
             if isinstance(data, dict) and "estimated_time" in data:
-                notes.append(f"[octet] model loading ~{data['estimated_time']}s")
+                notes.append(f"[octet] model warming (~{data['estimated_time']}s)")
             elif isinstance(data, dict) and "error" in data:
-                notes.append(f"[octet] HF API error: {data['error']}")
+                notes.append(f"[octet] {data['error']}")
             else:
-                notes.append("[octet] unknown JSON shape")
-        except Exception:
-            notes.append(_dbg("octet-stream", r))
+                notes.append("[octet] unknown JSON")
+        except Exception as e:
+            notes.append(f"[octet parse] {e}")
     except Exception as e:
         notes.append(f"[octet error] {e}")
 
@@ -88,28 +82,22 @@ def extract_text(image: Image.Image) -> str:
             if isinstance(data, dict) and isinstance(data.get("generated_text"), str):
                 return data["generated_text"].strip()
             if isinstance(data, dict) and "estimated_time" in data:
-                notes.append(f"[multipart] model loading ~{data['estimated_time']}s")
+                notes.append(f"[multipart] model warming (~{data['estimated_time']}s)")
             elif isinstance(data, dict) and "error" in data:
-                notes.append(f"[multipart] HF API error: {data['error']}")
+                notes.append(f"[multipart] {data['error']}")
             else:
-                notes.append("[multipart] unknown JSON shape")
-        except Exception:
-            notes.append(_dbg("multipart", r))
+                notes.append("[multipart] unknown JSON")
+        except Exception as e:
+            notes.append(f"[multipart parse] {e}")
     except Exception as e:
         notes.append(f"[multipart error] {e}")
 
-    # If nothing worked, surface all notes for debugging in the UI
-    return " | ".join(notes)
+    raise RuntimeError("OCR failed. " + " | ".join(notes))
 
 
-
-
-# -------------- Matching helpers --------------
-import re
-from difflib import get_close_matches
-
+# ---------------- Matching helpers ----------------
 def _normalize(txt: str) -> str:
-    # lowercase, collapse whitespace
+    # lowercase + collapse whitespace
     return re.sub(r"\s+", " ", (txt or "")).strip().lower()
 
 def _variants(term: str):
@@ -122,58 +110,62 @@ def _variants(term: str):
     return list(c)
 
 def _tokenize(txt: str):
-    # words only (throw away punctuation); good for OCR noise like "salt."
+    # words only (tolerant to OCR punctuation)
     return re.findall(r"[a-z]+", txt.lower())
 
-
 def _highlight(html_text: str, words: list) -> str:
-    """Wrap allergen hits in <mark> with case-insensitive replace."""
+    """Wrap matches in <mark> (case-insensitive)."""
     out = html_text
     for w in sorted(set(words), key=len, reverse=True):
         if not w:
             continue
-        # Use regex to preserve original casing while highlighting
         pattern = re.compile(re.escape(w), flags=re.IGNORECASE)
         out = pattern.sub(lambda m: f"<mark>{m.group(0)}</mark>", out)
     return out
 
 
-# -------------- Main logic --------------
-def scan_image(image, allergens_csv: str):
-    if image is None:
-        return gr.HTML("<b>No image uploaded.</b>")
+# ---------------- Main logic ----------------
+def scan_image(image, allergens_csv: str, show_text: bool):
+    # Token guard: friendlier message if secrets not set
+    if not HF_TOKEN:
+        return gr.HTML(
+            "<b>Missing HF_TOKEN.</b> In local runs, set it in a .env file. "
+            "In Hugging Face Spaces, add it under Settings → Repository secrets."
+        )
 
-    raw_text = extract_text(image)
+    if image is None or not (allergens_csv or "").strip():
+        return gr.HTML("<b>Provide an image and at least one allergen (comma-separated).</b>")
+
+    try:
+        raw_text = extract_text(image)
+    except Exception as e:
+        # Short, safe message (no raw JSON/error blobs)
+        return gr.HTML(f"<b>OCR error:</b> {str(e)}")
+
     norm_text = _normalize(raw_text)
-
-    # Show what OCR actually read (first 600 chars) so user can verify
     preview = (norm_text[:600] + ("..." if len(norm_text) > 600 else "")).replace("\n", " ")
 
     # Prepare allergen list
     allergens = [a.strip().lower() for a in (allergens_csv or "").split(",") if a.strip()]
 
-    # Build token list from OCR text
     tokens = _tokenize(norm_text)
     token_set = set(tokens)
 
     found = []
     for a in allergens:
         hit = False
-
-        # 1) exact token hit or variant token hit
+        # 1) exact/variant token hit
         for v in _variants(a):
             if v in token_set:
                 hit = True
                 break
-
-        # 2) fallback: regex word-boundary match in normalized text
+        # 2) regex word-boundary fallback
         if not hit:
             for v in _variants(a):
                 if re.search(rf"\b{re.escape(v)}\b", norm_text):
                     hit = True
                     break
-
-        # 3) fuzzy match: catch small OCR typos
+        # 3) light fuzzy (handles small OCR typos)
         if not hit:
             close = get_close_matches(a, tokens, n=1, cutoff=0.86)
             if close:
@@ -182,25 +174,29 @@ def scan_image(image, allergens_csv: str):
         if hit:
             found.append(a)
 
-    # Build HTML result
     found_str = ", ".join(found) if found else "None"
-    # Highlight only exact allergen terms (not all variants) in the preview text shown below
-    highlighted_preview = _highlight(preview, found)
+    highlighted_preview = _highlight(preview, found if show_text else [])
 
     html = f"""
     <div style="line-height:1.5">
       <h3 style="margin:0">Detected allergens: {found_str}</h3>
-      <p style="margin:.25rem 0 .5rem 0;font-size:.95rem;color:#bbb">Model: <code>{MODEL_ID}</code></p>
-      <h4 style="margin:.25rem 0">Extracted text (preview):</h4>
-      <div style="font-family:monospace;white-space:pre-wrap">{highlighted_preview}</div>
-      {"<p style='color:#f88'><b>Note:</b> " + raw_text + "</p>" if raw_text.startswith("[") else ""}
+      <p style="margin:.25rem 0 .5rem 0;font-size:.95rem;color:#999">
+        Model: <code>{MODEL_ID}</code> • Data is processed in memory only.
+      </p>
+      <details {"open" if show_text else ""} style="margin:.25rem 0">
+        <summary style="cursor:pointer"><b>Extracted text (preview)</b></summary>
+        <div style="font-family:monospace;white-space:pre-wrap;margin-top:.5rem">{highlighted_preview}</div>
+      </details>
+      <p style="color:#666;font-size:.9rem;margin-top:.5rem">
+        Assistive tool — always verify on the original packaging. Not medical advice.
+      </p>
     </div>
     """
     return gr.HTML(html)
 
 
-# -------------- Gradio UI --------------
-with gr.Blocks() as demo:
+# ---------------- Gradio UI ----------------
+with gr.Blocks(title="Allergen Scanner — API (TrOCR)") as demo:
     gr.Markdown("## 🥗 Allergen Scanner — API (Microsoft TrOCR on Hugging Face)")
     with gr.Row():
         img = gr.Image(type="pil", label="Upload ingredients photo / label")
@@ -208,10 +204,11 @@ with gr.Blocks() as demo:
             label="Your allergens (comma-separated)",
             placeholder="e.g. peanuts, milk, soy, gluten"
         )
+    show_text = gr.Checkbox(value=False, label="Show extracted text preview")
     out = gr.HTML()
     btn = gr.Button("Scan", variant="primary")
-    btn.click(scan_image, inputs=[img, allergens], outputs=[out])
+    btn.click(scan_image, inputs=[img, allergens, show_text], outputs=[out])
 
 if __name__ == "__main__":
-    # You can set server_name="0.0.0.0" if you want LAN access
+    # For local testing: demo.launch(server_name="0.0.0.0", server_port=7860)
     demo.launch()
