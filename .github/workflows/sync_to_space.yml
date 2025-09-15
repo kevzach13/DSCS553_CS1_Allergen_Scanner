@@ -1,5 +1,4 @@
 name: Sync to Hugging Face Space
-
 on:
   push:
     branches: [main]
@@ -9,19 +8,19 @@ jobs:
   sync-to-space:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           lfs: true
 
       - name: Push to Space
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-          HF_USERNAME: Mourya0402     
-          SPACE_NAME: Team-13/scan_for_allergies       
-          SPACE_BRANCH: main                 
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}            # your HF token (WRITE)
+          HF_ACTOR: Mourya0402                 # <-- your personal HF username (NOT Team-13)
+          HF_SPACE_SLUG: Team-13/scan_for_allergies    # <-- your Space slug
+          SPACE_BRANCH: main
         run: |
           set -e
-          echo "Pushing to https://huggingface.co/spaces/${HF_USERNAME}/${SPACE_NAME} (${SPACE_BRANCH})"
-          git push "https://${HF_USERNAME}:${HF_TOKEN}@huggingface.co/spaces/${HF_USERNAME}/${SPACE_NAME}" HEAD:${SPACE_BRANCH}
+          git config user.email "actions@github.com"
+          git config user.name "github-actions"
+          git push "https://${HF_ACTOR}:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE_SLUG}" HEAD:${SPACE_BRANCH}
