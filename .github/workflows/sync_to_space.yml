@@ -1,7 +1,7 @@
 - name: Push to Space
   env:
     HF_TOKEN: ${{ secrets.HF_TOKEN }}
-    HF_ACTOR: your-hf-username
+    HF_ACTOR: Kevzach13
     HF_SPACE_SLUG: Team-13/scan_for_allergies
     SPACE_BRANCH: main
   run: |
