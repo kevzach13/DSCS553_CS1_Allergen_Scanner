@@ -1,2 +1,9 @@
-# DSCS553_CS1_Allergen_Scanner
-Case Study 1
+# Allergen Scanner (API-based on OCR.space)
+
+Upload an ingredients photo, enter allergens (comma-separated), and the app highlights detected allergens.
+
+## Run locally
+```bash
+pip install -r requirements.txt
+python app.py
+
