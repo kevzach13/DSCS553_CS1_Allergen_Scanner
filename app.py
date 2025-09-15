@@ -64,7 +64,7 @@ def extract_text(image: Image.Image) -> str:
         except Exception as e:
             print("get_model_status error:", repr(e))
 
-        out = client.image_to_text(image=image)  # do NOT pass wait_for_model here
+        out = client.image_to_text(image=img_bytes)  # do NOT pass wait_for_model here
         if isinstance(out, str) and out.strip():
             return out.strip()
         if isinstance(out, list) and out and isinstance(out[0], dict) and out[0].get("generated_text"):
