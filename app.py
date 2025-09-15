@@ -11,11 +11,29 @@ from huggingface_hub import InferenceClient
 # ---------------- Env & config ----------------
 load_dotenv()  # for local runs only; Spaces will use repo secrets/variables
 
-MODEL_ID = (os.getenv("OCR_MODEL_ID") or "microsoft/trocr-base-printed").strip()
+# Defaults + env
+DEFAULT_MODEL_ID = "microsoft/trocr-base-printed"
+MODEL_ID = (os.getenv("OCR_MODEL_ID") or DEFAULT_MODEL_ID).strip()
 HF_TOKEN = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACEHUB_API_TOKEN")
-API_URL  = f"https://api-inference.huggingface.co/models/{MODEL_ID}"
 
-print("MODEL_ID:", repr(MODEL_ID), "HF_TOKEN set:", bool(HF_TOKEN))  # shows in Space logs
+def _model_exists(mid: str) -> bool:
+    try:
+        # Public model metadata endpoint (NOT the inference endpoint)
+        resp = requests.get(f"https://huggingface.co/api/models/{mid}", timeout=15,
+                            headers={"Authorization": f"Bearer {HF_TOKEN}"} if HF_TOKEN else {})
+        return resp.status_code == 200
+    except Exception as e:
+        print("[WARN] Model check error:", e)
+        return False
+
+# Validate MODEL_ID early and fall back if needed
+if not _model_exists(MODEL_ID):
+    print(f"[WARN] MODEL_ID {MODEL_ID!r} not found. Falling back to {DEFAULT_MODEL_ID!r}.")
+    MODEL_ID = DEFAULT_MODEL_ID
+
+API_URL = f"https://api-inference.huggingface.co/models/{MODEL_ID}"
+print("MODEL_ID:", repr(MODEL_ID), "HF_TOKEN set:", bool(HF_TOKEN))
+
 
 # ---------------- OCR (Inference API only) ----------------
 def extract_text(image: Image.Image) -> str:
