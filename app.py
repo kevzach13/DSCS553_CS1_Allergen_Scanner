@@ -56,7 +56,12 @@ def extract_text(image: Image.Image) -> str:
 
     # 1) Official client call
     try:
-        client = InferenceClient(model=MODEL_ID, token=HF_TOKEN, timeout=90)
+        client = InferenceClient(model=MODEL_ID, token=HF_TOKEN, provider="hf-inference",timeout=90)
+         try:
+            status = client.get_model_status()
+            print("hf status:", getattr(status, "loaded", None), getattr(status, "state", None))
+        except Exception as e:
+            print("get_model_status error:", repr(e))
         out = client.image_to_text(image=image)  # do NOT pass wait_for_model here
         if isinstance(out, str) and out.strip():
             return out.strip()
