@@ -2,8 +2,8 @@ name: Sync to Hugging Face Space
 
 on:
   push:
-    branches: [main]           # runs on any push to main
-  workflow_dispatch:           # lets you run it manually from Actions tab
+    branches: [main]          # run on every push to main
+  workflow_dispatch:          # allow manual runs from Actions tab
 
 jobs:
   sync-to-space:
@@ -15,17 +15,16 @@ jobs:
           fetch-depth: 0
           lfs: true
 
-      - name: Push to Space (force once to align histories)
+      - name: Push to Space (force overwrite)
         env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}            # your WRITE token (in GitHub repo secrets)
-          HF_ACTOR: kevzach13                          # <-- YOUR HF username (token owner)
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}            # GitHub Actions secret (WRITE scope)
+          HF_ACTOR: Kevzach13                          # <-- your Hugging Face username (token owner)
           HF_SPACE_SLUG: Team-13/scan_for_allergies    # your Space slug
-          SPACE_BRANCH: main
+          SPACE_BRANCH: main                           # Space branch (usually main)
         run: |
           set -e
           git config user.email "actions@github.com"
           git config user.name "github-actions"
-          git push --force-with-lease \
+          git push --force \
             "https://${HF_ACTOR}:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE_SLUG}" \
             HEAD:${SPACE_BRANCH}
-
