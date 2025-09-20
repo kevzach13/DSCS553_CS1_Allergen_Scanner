@@ -18,7 +18,7 @@ jobs:
       - name: Push to Space (force once to align histories)
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}            # your WRITE token (in GitHub repo secrets)
-          HF_ACTOR: Kevzach13                          # <-- YOUR HF username (token owner)
+          HF_ACTOR: kevzach13                          # <-- YOUR HF username (token owner)
           HF_SPACE_SLUG: Team-13/scan_for_allergies    # your Space slug
           SPACE_BRANCH: main
         run: |
