@@ -11,7 +11,7 @@ license: apache-2.0
 ---
 # Allergen Scanner (API-based on OCR.space)
 
-Upload an ingredients photo, enter allergens (comma-separated), and the app highlights detected allergens.
+Upload an ingredients photo, enter the allergens (comma-separated), and the app highlights detected allergens.
 
 ## Run locally
 ```bash
