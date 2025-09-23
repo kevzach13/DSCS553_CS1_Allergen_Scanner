@@ -1,77 +1,40 @@
 import os
-import io
+import io 
 import re
+import time
 import requests
 from PIL import Image
 import gradio as gr
-from dotenv import load_dotenv
 from difflib import get_close_matches
+from dotenv import load_dotenv
 
-# ---------------- Config ----------------
-load_dotenv()  # local only; in Spaces use repo secrets/variables
-
-OCRSPACE_API_KEY = os.getenv("OCRSPACE_API_KEY")  # <-- add as Repo Secret in your Space
+# Config 
+load_dotenv()  # local only; in Spaces use Repo Secrets
+OCRSPACE_API_KEY = os.getenv("OCRSPACE_API_KEY")
 OCRSPACE_URL = "https://api.ocr.space/parse/image"
 
-print("OCRSPACE_API_KEY set:", bool(OCRSPACE_API_KEY))
-
-# ---------------- OCR via OCR.space ----------------
+# OCR
 def extract_text(image: Image.Image) -> str:
-    """
-    Call OCR.space REST API and return extracted text.
-    Raises RuntimeError with a clear message if the call fails.
-    """
     if not OCRSPACE_API_KEY:
-        raise RuntimeError("OCRSPACE_API_KEY missing. In Spaces, add it under Settings → Repository secrets.")
+        raise RuntimeError("Missing OCRSPACE_API_KEY (set it in Space → Settings → Repository secrets)")
 
-    # Convert PIL image → bytes
     buf = io.BytesIO()
     image.save(buf, format="PNG")
-    img_bytes = buf.getvalue()
-
-    # Build request
-    files = {"file": ("image.png", img_bytes, "image/png")}
-    data = {
-        "language": "eng",
-        "scale": "true",          # helps small text
-        "isTable": "false",
-        "OCREngine": 2,           # 1 or 2 (2 is generally better for printed)
-    }
+    files = {"file": ("image.png", buf.getvalue(), "image/png")}
+    data = {"language": "eng", "scale": "true", "isTable": "false", "OCREngine": 2}
     headers = {"apikey": OCRSPACE_API_KEY}
 
-    try:
-        r = requests.post(OCRSPACE_URL, files=files, data=data, headers=headers, timeout=90)
-    except Exception as e:
-        raise RuntimeError(f"OCR API request failed: {e}")
-
-    # Robust JSON handling with diagnostics
-    try:
-        j = r.json()
-    except Exception:
-        snippet = (r.text or "")[:240].replace("\n", " ")
-        raise RuntimeError(f"OCR API non-JSON response (status {r.status_code}): {snippet!r}")
-
-    if j.get("IsErroredOnProcessing"):
-        emsg = j.get("ErrorMessage") or j.get("ErrorMessageDetails") or "Unknown OCR error"
-        # Some returns have list error message
-        if isinstance(emsg, list) and emsg:
-            emsg = emsg[0]
-        raise RuntimeError(f"OCR API error: {emsg}")
+    r = requests.post(OCRSPACE_URL, files=files, data=data, headers=headers, timeout=60)
+    j = r.json()  # minimal happy-path
 
     results = j.get("ParsedResults") or []
-    text_parts = []
-    for res in results:
-        t = res.get("ParsedText") or ""
-        if t.strip():
-            text_parts.append(t)
-
-    text = "\n".join(text_parts).strip()
+    text = (results[0].get("ParsedText") if results else "") or ""
+    text = text.strip()
     if not text:
-        raise RuntimeError("OCR returned empty text.")
-
+        raise RuntimeError("No text detected.")
     return text
 
-# ---------------- Matching helpers ----------------
+# Matching helpers
 def _normalize(txt: str) -> str:
     return re.sub(r"\s+", " ", (txt or "")).strip().lower()
 
@@ -91,22 +54,29 @@ def _highlight(html_text: str, words: list) -> str:
     out = html_text
     for w in sorted(set(words), key=len, reverse=True):
         if not w: continue
-        pattern = re.compile(re.escape(w), flags=re.IGNORECASE)
-        out = pattern.sub(lambda m: f"<mark>{m.group(0)}</mark>", out)
+        out = re.compile(re.escape(w), flags=re.IGNORECASE).sub(
+            lambda m: f"<mark>{m.group(0)}</mark>", out
+        )
     return out
 
-# ---------------- Main logic ----------------
+# Main
 def scan_image(image, allergens_csv: str, show_text: bool):
     if image is None or not (allergens_csv or "").strip():
-        return gr.HTML("<b>Provide an image and at least one allergen (comma-separated).</b>")
+        return gr.HTML("<div class='card warn'>Upload an image and enter allergens (comma-separated).</div>")
 
+    t0 = time.perf_counter()
+    t_ocr0 = time.perf_counter()
     try:
         raw_text = extract_text(image)
     except Exception as e:
-        return gr.HTML(f"<b>OCR error:</b> {str(e)}")
+        return gr.HTML(f"<div class='card error'><b>OCR error:</b> {e}</div>")
+    t_ocr_ms = (time.perf_counter() - t_ocr0) * 1000.0
+
+    # keep OCR timing in logs only (not shown to user)
+    print(f"[metrics] OCR_time_ms={t_ocr_ms:.1f}")
 
     norm_text = _normalize(raw_text)
-    preview = (norm_text[:600] + ("..." if len(norm_text) > 600 else "")).replace("\n", " ")
+    preview = (norm_text[:800] + ("..." if len(norm_text) > 800 else "")).replace("\n", " ")
 
     allergens = [a.strip().lower() for a in (allergens_csv or "").split(",") if a.strip()]
     tokens = _tokenize(norm_text)
@@ -114,51 +84,69 @@ def scan_image(image, allergens_csv: str, show_text: bool):
 
     found = []
     for a in allergens:
-        hit = False
-        for v in _variants(a):
-            if v in token_set:
-                hit = True
-                break
-        if not hit:
-            close = get_close_matches(a, tokens, n=1, cutoff=0.86)
-            if close:
-                hit = True
+        hit = any(v in token_set for v in _variants(a))
+        if not hit:  # small OCR typos
+            hit = bool(get_close_matches(a, tokens, n=1, cutoff=0.86))
         if hit:
             found.append(a)
 
-    found_str = ", ".join(found) if found else "None"
+    total_ms = (time.perf_counter() - t0) * 1000.0
+
+    chips = (
+        "".join(f"<span class='chip hit'>{a}</span>" for a in sorted(set(found)))
+        if found else "<span class='chip ok'>None</span>"
+    )
     highlighted_preview = _highlight(preview, found if show_text else [])
 
     html = f"""
-    <div style="line-height:1.5">
-      <h3 style="margin:0">Detected allergens: {found_str}</h3>
-      <p style="margin:.25rem 0 .5rem 0;font-size:.95rem;color:#999">
-        API: <code>OCR.space</code> • Data processed in memory only (we do not store inputs).
-      </p>
-      <details {"open" if show_text else ""} style="margin:.25rem 0">
-        <summary style="cursor:pointer"><b>Extracted text (preview)</b></summary>
-        <div style="font-family:monospace;white-space:pre-wrap;margin-top:.5rem">{highlighted_preview}</div>
-      </details>
-      <p style="color:#666;font-size:.9rem;margin-top:.5rem">
-        Assistive tool — always verify on the original packaging. Not medical advice.
-      </p>
+    <style>
+      .wrap {{ font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto; line-height:1.45; }}
+      .subtle {{ color:#6b7280; font-size:.92rem; }}
+      .row {{ display:flex; gap:.75rem; flex-wrap:wrap; align-items:center; }}
+      .card {{ background:#0b1220; border:1px solid #1f2a44; padding:12px 14px; border-radius:12px; }}
+      .warn {{ border-color:#665200; background:#1f1a00; }}
+      .error {{ border-color:#7f1d1d; background:#1f0b0b; }}
+      .chip {{ display:inline-block; padding:.25rem .6rem; border-radius:999px; font-weight:600; }}
+      .chip.hit {{ background:#fee2e2; color:#991b1b; border:1px solid #fecaca; }}
+      .chip.ok  {{ background:#dcfce7; color:#166534; border:1px solid #bbf7d0; }}
+      .metric {{ display:inline-block; background:#0b1220; border:1px solid #1f2a44; border-radius:8px; padding:.25rem .5rem; }}
+      details {{ margin-top:.5rem; }} summary {{ cursor:pointer; }}
+    </style>
+    <div class="wrap">
+      <div class="card">
+        <div class="row" style="justify-content:space-between">
+          <div>
+            <div style="font-size:1.1rem;font-weight:700;">Detected allergens</div>
+            <div class="row" style="margin-top:.35rem">{chips}</div>
+          </div>
+          <div class="row" style="justify-content:flex-end;text-align:right">
+            <span class="metric">Time: {total_ms:.1f} ms</span>
+          </div>
+        </div>
+        <details {"open" if show_text else ""}>
+          <summary><b>Extracted text (preview)</b></summary>
+          <div style="font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space:pre-wrap; margin-top:.5rem;">
+            {highlighted_preview}
+          </div>
+        </details>
+        <div class="subtle" style="margin-top:.5rem">
+          Assistive tool — always verify on the original packaging. Not medical advice.
+        </div>
+      </div>
     </div>
     """
     return gr.HTML(html)
 
-# ---------------- Gradio UI ----------------
+# UI
 with gr.Blocks(title="Allergen Scanner — API (OCR.space)") as demo:
     gr.Markdown("## 🥗 Allergen Scanner — API (OCR.space)")
     with gr.Row():
         img = gr.Image(type="pil", label="Upload ingredients photo / label")
-        allergens = gr.Textbox(
-            label="Your allergens (comma-separated)",
-            placeholder="e.g. peanuts, milk, soy, gluten"
-        )
+        allergens = gr.Textbox(label="Your allergens (comma-separated)",
+                               placeholder="e.g. peanuts, milk, soy, gluten")
     show_text = gr.Checkbox(value=False, label="Show extracted text preview")
     out = gr.HTML()
-    btn = gr.Button("Scan", variant="primary")
-    btn.click(scan_image, inputs=[img, allergens, show_text], outputs=[out])
+    gr.Button("Scan", variant="primary").click(scan_image, [img, allergens, show_text], [out])
 
 if __name__ == "__main__":
     demo.launch()
