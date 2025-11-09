@@ -3,3 +3,5 @@ huggingface_hub==0.24.6
 requests==2.32.3
 pillow==10.4.0
 python-dotenv==1.0.1
+prometheus-client==0.20.0
+
