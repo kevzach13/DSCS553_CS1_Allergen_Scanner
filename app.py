@@ -165,4 +165,5 @@ with gr.Blocks(title="Allergen Scanner — API (OCR.space)") as demo:
 
 if __name__ == "__main__":
     # === IMPORTANT: bind to 0.0.0.0 and port 7860 for Docker ===
-    demo.launch(server_name="0.0.0.0", server_port=7860, share=False)
+    demo.launch(server_name="0.0.0.0", server_port=7860, share=True)
+
