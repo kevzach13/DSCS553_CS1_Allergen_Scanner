@@ -1,8 +1,17 @@
+# >>> TOP OF FILE (line 1–15), before any other imports <<<
 import os
-os.environ.setdefault("NO_PROXY", "127.0.0.1,localhost")
-os.environ.setdefault("no_proxy", "127.0.0.1,localhost")
 
-import io 
+# Hard-remove all proxy envs so localhost checks don't go through a proxy
+for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+          "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"):
+    os.environ.pop(k, None)
+
+# Re-set safe NO_PROXY so later exports won't affect localhost
+os.environ["NO_PROXY"] = "127.0.0.1,localhost"
+os.environ["no_proxy"] = "127.0.0.1,localhost"
+
+# now the rest of your imports
+import io
 import re
 import time
 import requests
