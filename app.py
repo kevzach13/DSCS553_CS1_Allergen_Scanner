@@ -8,15 +8,21 @@ import gradio as gr
 from difflib import get_close_matches
 from dotenv import load_dotenv
 
+# === NEW: Prometheus app-level metrics ===
+from prometheus_client import start_http_server, Counter, Histogram
+start_http_server(8000)  # expose app metrics at /metrics on port 8000
+APP_REQUESTS = Counter("app_requests_total", "Total app requests")
+APP_LATENCY  = Histogram("app_request_latency_seconds", "Request latency (s)")
+
 # Config 
-load_dotenv()  # local only; in Spaces use Repo Secrets
+load_dotenv()  # local only; in Docker set env vars at runtime
 OCRSPACE_API_KEY = os.getenv("OCRSPACE_API_KEY")
 OCRSPACE_URL = "https://api.ocr.space/parse/image"
 
 # OCR
 def extract_text(image: Image.Image) -> str:
     if not OCRSPACE_API_KEY:
-        raise RuntimeError("Missing OCRSPACE_API_KEY (set it in Space → Settings → Repository secrets)")
+        raise RuntimeError("Missing OCRSPACE_API_KEY (set it as an environment variable)")
 
     buf = io.BytesIO()
     image.save(buf, format="PNG")
@@ -64,7 +70,10 @@ def scan_image(image, allergens_csv: str, show_text: bool):
     if image is None or not (allergens_csv or "").strip():
         return gr.HTML("<div class='card warn'>Upload an image and enter allergens (comma-separated).</div>")
 
+    # === NEW: metrics timing + counter ===
     t0 = time.perf_counter()
+    APP_REQUESTS.inc()
+
     t_ocr0 = time.perf_counter()
     try:
         raw_text = extract_text(image)
@@ -91,6 +100,9 @@ def scan_image(image, allergens_csv: str, show_text: bool):
             found.append(a)
 
     total_ms = (time.perf_counter() - t0) * 1000.0
+
+    # === NEW: observe latency ===
+    APP_LATENCY.observe(total_ms / 1000.0)
 
     chips = (
         "".join(f"<span class='chip hit'>{a}</span>" for a in sorted(set(found)))
@@ -149,4 +161,5 @@ with gr.Blocks(title="Allergen Scanner — API (OCR.space)") as demo:
     gr.Button("Scan", variant="primary").click(scan_image, [img, allergens, show_text], [out])
 
 if __name__ == "__main__":
-    demo.launch()
+    # === IMPORTANT: bind to 0.0.0.0 and port 7860 for Docker ===
+    demo.launch(server_name="0.0.0.0", server_port=7860, share=False)
