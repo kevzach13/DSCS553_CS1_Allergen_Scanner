@@ -1,16 +1,39 @@
-# >>> TOP OF FILE (line 1–15), before any other imports <<<
+# --- hard kill proxies + monkey-patch gradio_client schema bug ---
 import os
 
-# Kill any proxy so localhost checks don't route through a proxy
+# 1) kill proxy env so localhost checks don't route via proxy
 for k in ("HTTP_PROXY","HTTPS_PROXY","http_proxy","https_proxy","ALL_PROXY","all_proxy","NO_PROXY","no_proxy"):
     os.environ.pop(k, None)
 os.environ["NO_PROXY"] = "127.0.0.1,localhost"
 os.environ["no_proxy"]  = "127.0.0.1,localhost"
 
-# Monkey-patch Gradio to completely skip API schema generation (the crashing path)
+# 2) patch gradio_client JSON-schema helpers BEFORE Gradio imports use them
+import gradio_client.utils as _gcu
+
+# guard get_type against non-dict schemas (like bool)
+_old_get_type = _gcu.get_type
+def _safe_get_type(schema):
+    if not isinstance(schema, dict):
+        return "any"
+    return _old_get_type(schema)
+_gcu.get_type = _safe_get_type
+
+# guard _json_schema_to_python_type against bool additionalProperties and non-dicts
+_old_js2py = _gcu._json_schema_to_python_type
+def _safe_js2py(schema, defs=None):
+    if not isinstance(schema, dict):
+        return "any"
+    ap = schema.get("additionalProperties")
+    if isinstance(ap, bool):
+        # treat True/False as generic mapping to avoid iterating a bool
+        schema = dict(schema)
+        schema["additionalProperties"] = {}
+    return _old_js2py(schema, defs)
+_gcu._json_schema_to_python_type = _safe_js2py
+
+# 3) OPTIONAL: bypass Gradio's API-info generation entirely (belt & suspenders)
 import gradio.blocks as _g_blocks
-def _noop_api_info(self):  # noqa: D401
-    """Bypass schema generation to avoid gradio_client JSON schema bug."""
+def _noop_api_info(self):
     return {}
 _g_blocks.Blocks.get_api_info = _noop_api_info
 # --- end patch ---
