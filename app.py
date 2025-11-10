@@ -162,7 +162,7 @@ def scan_image(image, allergens_csv: str, show_text: bool):
     return gr.HTML(html)
 
 # UI
-with gr.Blocks(title="Allergen Scanner — API (OCR.space)") as demo:
+with gr.Blocks(title="Allergen Scanner — API (OCR.space)", analytics_enabled=False) as demo:
     gr.Markdown("## 🥗 Allergen Scanner — API (OCR.space)")
     with gr.Row():
         img = gr.Image(type="pil", label="Upload ingredients photo / label")
