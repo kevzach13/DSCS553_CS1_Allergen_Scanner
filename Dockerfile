@@ -6,7 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-
+ENV PYTHONPATH=/app
 ENV NO_PROXY=127.0.0.1,localhost \
     no_proxy=127.0.0.1,localhost \
     HTTP_PROXY= \
