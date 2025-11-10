@@ -6,10 +6,7 @@ import requests
 from PIL import Image
 import gradio as gr
 from difflib import get_close_matches
-from dotenv import load_dotenv
 
-# Config 
-load_dotenv()  # local only; in Spaces use Repo Secrets
 OCRSPACE_API_KEY = os.getenv("OCRSPACE_API_KEY")
 OCRSPACE_URL = "https://api.ocr.space/parse/image"
 
