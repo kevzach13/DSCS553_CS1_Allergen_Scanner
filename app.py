@@ -1,14 +1,19 @@
 # >>> TOP OF FILE (line 1–15), before any other imports <<<
 import os
 
-# Hard-remove all proxy envs so localhost checks don't go through a proxy
-for k in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
-          "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy"):
+# Kill any proxy so localhost checks don't route through a proxy
+for k in ("HTTP_PROXY","HTTPS_PROXY","http_proxy","https_proxy","ALL_PROXY","all_proxy","NO_PROXY","no_proxy"):
     os.environ.pop(k, None)
-
-# Re-set safe NO_PROXY so later exports won't affect localhost
 os.environ["NO_PROXY"] = "127.0.0.1,localhost"
-os.environ["no_proxy"] = "127.0.0.1,localhost"
+os.environ["no_proxy"]  = "127.0.0.1,localhost"
+
+# Monkey-patch Gradio to completely skip API schema generation (the crashing path)
+import gradio.blocks as _g_blocks
+def _noop_api_info(self):  # noqa: D401
+    """Bypass schema generation to avoid gradio_client JSON schema bug."""
+    return {}
+_g_blocks.Blocks.get_api_info = _noop_api_info
+# --- end patch ---
 
 # now the rest of your imports
 import io
