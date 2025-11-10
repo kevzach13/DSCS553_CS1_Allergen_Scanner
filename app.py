@@ -6,7 +6,6 @@ import requests
 from PIL import Image
 import gradio as gr
 from difflib import get_close_matches
-from dotenv import load_dotenv
 
 # Prometheus
 from prometheus_client import start_http_server, Counter, Histogram
@@ -17,7 +16,7 @@ APP_REQUESTS = Counter("app_requests_total", "Total app requests")
 APP_LATENCY  = Histogram("app_request_latency_seconds", "Request latency (s)")
 
 # ---- Config
-load_dotenv()
+
 OCRSPACE_API_KEY = os.getenv("OCRSPACE_API_KEY", "").strip()
 OCRSPACE_URL = "https://api.ocr.space/parse/image"
 
