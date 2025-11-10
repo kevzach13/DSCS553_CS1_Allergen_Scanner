@@ -1,44 +1,4 @@
-# --- hard kill proxies + monkey-patch gradio_client schema bug ---
 import os
-
-# 1) kill proxy env so localhost checks don't route via proxy
-for k in ("HTTP_PROXY","HTTPS_PROXY","http_proxy","https_proxy","ALL_PROXY","all_proxy","NO_PROXY","no_proxy"):
-    os.environ.pop(k, None)
-os.environ["NO_PROXY"] = "127.0.0.1,localhost"
-os.environ["no_proxy"]  = "127.0.0.1,localhost"
-
-# 2) patch gradio_client JSON-schema helpers BEFORE Gradio imports use them
-import gradio_client.utils as _gcu
-
-# guard get_type against non-dict schemas (like bool)
-_old_get_type = _gcu.get_type
-def _safe_get_type(schema):
-    if not isinstance(schema, dict):
-        return "any"
-    return _old_get_type(schema)
-_gcu.get_type = _safe_get_type
-
-# guard _json_schema_to_python_type against bool additionalProperties and non-dicts
-_old_js2py = _gcu._json_schema_to_python_type
-def _safe_js2py(schema, defs=None):
-    if not isinstance(schema, dict):
-        return "any"
-    ap = schema.get("additionalProperties")
-    if isinstance(ap, bool):
-        # treat True/False as generic mapping to avoid iterating a bool
-        schema = dict(schema)
-        schema["additionalProperties"] = {}
-    return _old_js2py(schema, defs)
-_gcu._json_schema_to_python_type = _safe_js2py
-
-# 3) OPTIONAL: bypass Gradio's API-info generation entirely (belt & suspenders)
-import gradio.blocks as _g_blocks
-def _noop_api_info(self):
-    return {}
-_g_blocks.Blocks.get_api_info = _noop_api_info
-# --- end patch ---
-
-# now the rest of your imports
 import io
 import re
 import time
@@ -48,31 +8,30 @@ import gradio as gr
 from difflib import get_close_matches
 from dotenv import load_dotenv
 
-# === NEW: Prometheus app-level metrics ===
+# Prometheus
 from prometheus_client import start_http_server, Counter, Histogram
-start_http_server(8000)  # expose app metrics at /metrics on port 8000
+
+# ---- Prometheus metrics
+start_http_server(8000)  # export /metrics on :8000
 APP_REQUESTS = Counter("app_requests_total", "Total app requests")
 APP_LATENCY  = Histogram("app_request_latency_seconds", "Request latency (s)")
 
-# Config 
-load_dotenv()  # local only; in Docker set env vars at runtime
-OCRSPACE_API_KEY = os.getenv("OCRSPACE_API_KEY")
+# ---- Config
+load_dotenv()
+OCRSPACE_API_KEY = os.getenv("OCRSPACE_API_KEY", "").strip()
 OCRSPACE_URL = "https://api.ocr.space/parse/image"
 
-# OCR
+# ---- OCR
 def extract_text(image: Image.Image) -> str:
     if not OCRSPACE_API_KEY:
         raise RuntimeError("Missing OCRSPACE_API_KEY (set it as an environment variable)")
-
     buf = io.BytesIO()
     image.save(buf, format="PNG")
     files = {"file": ("image.png", buf.getvalue(), "image/png")}
     data = {"language": "eng", "scale": "true", "isTable": "false", "OCREngine": 2}
     headers = {"apikey": OCRSPACE_API_KEY}
-
     r = requests.post(OCRSPACE_URL, files=files, data=data, headers=headers, timeout=60)
-    j = r.json()  # minimal happy-path
-
+    j = r.json()
     results = j.get("ParsedResults") or []
     text = (results[0].get("ParsedText") if results else "") or ""
     text = text.strip()
@@ -80,7 +39,7 @@ def extract_text(image: Image.Image) -> str:
         raise RuntimeError("No text detected.")
     return text
 
-# Matching helpers
+# ---- helpers
 def _normalize(txt: str) -> str:
     return re.sub(r"\s+", " ", (txt or "")).strip().lower()
 
@@ -99,34 +58,32 @@ def _tokenize(txt: str):
 def _highlight(html_text: str, words: list) -> str:
     out = html_text
     for w in sorted(set(words), key=len, reverse=True):
-        if not w: continue
+        if not w:
+            continue
         out = re.compile(re.escape(w), flags=re.IGNORECASE).sub(
             lambda m: f"<mark>{m.group(0)}</mark>", out
         )
     return out
 
-# Main
+# ---- main fn
 def scan_image(image, allergens_csv: str, show_text: bool):
     if image is None or not (allergens_csv or "").strip():
         return gr.HTML("<div class='card warn'>Upload an image and enter allergens (comma-separated).</div>")
 
-    # === NEW: metrics timing + counter ===
     t0 = time.perf_counter()
     APP_REQUESTS.inc()
 
-    t_ocr0 = time.perf_counter()
+    # OCR
     try:
+        t_ocr0 = time.perf_counter()
         raw_text = extract_text(image)
+        print(f"[metrics] OCR_time_ms={(time.perf_counter()-t_ocr0)*1000.0:.1f}")
     except Exception as e:
         return gr.HTML(f"<div class='card error'><b>OCR error:</b> {e}</div>")
-    t_ocr_ms = (time.perf_counter() - t_ocr0) * 1000.0
 
-    # keep OCR timing in logs only (not shown to user)
-    print(f"[metrics] OCR_time_ms={t_ocr_ms:.1f}")
-
+    # match
     norm_text = _normalize(raw_text)
     preview = (norm_text[:800] + ("..." if len(norm_text) > 800 else "")).replace("\n", " ")
-
     allergens = [a.strip().lower() for a in (allergens_csv or "").split(",") if a.strip()]
     tokens = _tokenize(norm_text)
     token_set = set(tokens)
@@ -134,14 +91,12 @@ def scan_image(image, allergens_csv: str, show_text: bool):
     found = []
     for a in allergens:
         hit = any(v in token_set for v in _variants(a))
-        if not hit:  # small OCR typos
+        if not hit:
             hit = bool(get_close_matches(a, tokens, n=1, cutoff=0.86))
         if hit:
             found.append(a)
 
     total_ms = (time.perf_counter() - t0) * 1000.0
-
-    # === NEW: observe latency ===
     APP_LATENCY.observe(total_ms / 1000.0)
 
     chips = (
@@ -189,8 +144,8 @@ def scan_image(image, allergens_csv: str, show_text: bool):
     """
     return gr.HTML(html)
 
-# UI
-with gr.Blocks(title="Allergen Scanner — API (OCR.space)", analytics_enabled=False) as demo:
+# ---- UI
+with gr.Blocks(title="Allergen Scanner — API (OCR.space)") as demo:
     gr.Markdown("## 🥗 Allergen Scanner — API (OCR.space)")
     with gr.Row():
         img = gr.Image(type="pil", label="Upload ingredients photo / label")
@@ -201,5 +156,4 @@ with gr.Blocks(title="Allergen Scanner — API (OCR.space)", analytics_enabled=F
     gr.Button("Scan", variant="primary").click(scan_image, [img, allergens, show_text], [out])
 
 if __name__ == "__main__":
-    # === IMPORTANT: bind to 0.0.0.0 and port 7860 for Docker ===
-    demo.launch(server_name="0.0.0.0", server_port=7860, share=True, show_api=False)
+    demo.launch(server_name="0.0.0.0", server_port=7860)
