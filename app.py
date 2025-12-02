@@ -153,6 +153,8 @@ with gr.Blocks(title="Allergen Scanner — API (OCR.space)") as demo:
     show_text = gr.Checkbox(value=False, label="Show extracted text preview")
     out = gr.HTML()
     gr.Button("Scan", variant="primary").click(scan_image, [img, allergens, show_text], [out])
-
+    
 if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=7860)
+    # Cloud-friendly: use $PORT if set, otherwise default to 7860 (for local/Docker)
+    port = int(os.getenv("PORT", "7860"))
+    demo.launch(server_name="0.0.0.0", server_port=port)
