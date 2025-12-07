@@ -1,5 +1,9 @@
 FROM python:3.11-slim
 
+# Make Python logs unbuffered and avoid pip cache
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+
 # Work inside /app
 WORKDIR /app
 
@@ -7,15 +11,12 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy app code
-COPY app.py .
+# Copy ALL app code (includes app.py and any helpers)
+COPY . .
 
-# (Optional) just so logs flush immediately
-ENV PYTHONUNBUFFERED=1
+# Gradio UI listens on 7860 (or $PORT), Prometheus on 8000
+EXPOSE 7860
+EXPOSE 8000
 
-# Cloud Run sends traffic to $PORT (usually 8080)
-# EXPOSE is just documentation, but we set it to 8080 to avoid confusion.
-EXPOSE 8080
-
-# OCRSPACE_API_KEY and PORT will be injected by Cloud Run as env vars
-CMD ["python", "app.py"]
+# Start the app
+CMD ["python", "app.py"]
